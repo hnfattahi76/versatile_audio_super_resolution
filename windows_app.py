@@ -307,18 +307,46 @@ class AudioSRDesktop:
         }
 
     def _ensure_dependencies(self) -> None:
+        def _run_pip(cmd: list[str], context: str) -> None:
+            self._log(f"Running: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.stdout:
+                self._log(result.stdout.strip())
+            if result.stderr:
+                self._log(result.stderr.strip())
+            if result.returncode != 0:
+                raise RuntimeError(f"{context} failed with exit code {result.returncode}")
+
         requirements_file = Path(__file__).resolve().parent / "requirements.txt"
         if not requirements_file.exists():
             raise FileNotFoundError(f"requirements.txt not found at {requirements_file}")
 
-        cmd = [sys.executable, "-m", "pip", "install", "-r", str(requirements_file)]
-        self._log(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            self._log(result.stdout)
-            self._log(result.stderr)
-            raise RuntimeError(result.stderr.strip() or "Dependency installation failed")
-        self._log("Dependencies are up to date.")
+        try:
+            _run_pip([sys.executable, "-m", "pip", "install", "-r", str(requirements_file)], "Primary dependency install")
+            self._log("Dependencies are up to date.")
+            return
+        except Exception as exc:
+            self._log(f"Primary install failed: {exc}")
+            self._log("Retrying with PyPI diffusers fallback (replacing git+https://github.com/huggingface/diffusers.git)...")
+
+        # Fallback path: replace git-based diffusers with a stable PyPI release
+        lines = [line.strip() for line in requirements_file.read_text(encoding="utf-8").splitlines() if line.strip() and not line.strip().startswith("#")]
+        packages: list[str] = []
+        pip_options: list[str] = []
+        for line in lines:
+            if line.startswith("--extra-index-url"):
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2:
+                    pip_options.extend(["--extra-index-url", parts[1]])
+                continue
+            if line.startswith("git+https://github.com/huggingface/diffusers.git"):
+                packages.append("diffusers==0.24.0")
+            else:
+                packages.append(line)
+
+        fallback_cmd = [sys.executable, "-m", "pip", "install", *pip_options, *packages]
+        _run_pip(fallback_cmd, "Fallback dependency install")
+        self._log("Dependencies installed with diffusers PyPI fallback.")
 
 
 def main() -> None:
